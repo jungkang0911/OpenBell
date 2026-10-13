@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-orb-ntfy 主入口。
+orb-radar 主入口。
 
   python orb.py init        互動設定精靈（資料來源、永豐金鑰、股票、通知管道）
   python orb.py check       檢查設定、資料來源、通知是否正常
@@ -9,7 +9,7 @@ orb-ntfy 主入口。
   python orb.py run         盤中監控（讀 config.toml）
   python orb.py backtest    回測（參數同 backtest.py）
 
-run / fake / demo 後面可以接任何 orb_multi_yf_ntfy.py 的參數，例如：
+run / fake / demo 後面可以接任何 orb_monitor.py 的參數，例如：
   python orb.py run --vol-factor 2 --notify print
   python orb.py run --notify telegram,discord
 """
@@ -30,7 +30,7 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("請先安裝套件：pip install -r requirements.txt")
 
-console = Console()
+console = Console(highlight=False)
 
 
 # ---------------------------------------------------------------- 小工具
@@ -88,13 +88,16 @@ def test_shioaji_login(key, secret, simulation):
 
 
 def send_test(channel, prefix="測試通知"):
-    return channel.send(f"orb-ntfy {prefix}", f"收到這則就代表 {channel.name} 設定正確 ✅\n{datetime.now():%Y-%m-%d %H:%M:%S}",
+    return channel.send(f"orb-radar {prefix}", f"收到這則就代表 {channel.name} 設定正確 ✅\n{datetime.now():%Y-%m-%d %H:%M:%S}",
                         tags=["white_check_mark"], priority=3)
 
 
 def setup_channel(cls, env):
     """互動輸入一個通知管道的設定，回傳要寫進 .env 的值。"""
-    console.print(f"\n  [bold]{cls.label}[/bold]\n  [dim]{cls.help}[/dim]")
+    console.print(f"\n  [bold]{cls.label}[/bold]")
+    for line in cls.help.split("。"):
+        if line.strip():
+            console.print(f"  [dim]{line.strip()}。[/dim]")
     values = {}
     for var, desc, required, secret in cls.env:
         current = env.get(var) or os.environ.get(var, "")
@@ -126,16 +129,20 @@ def setup_channel(cls, env):
 def cmd_init(argv):
     cfg_path, env_path = orb_config.DEFAULT_CONFIG, orb_config.DEFAULT_ENV
     orb_config.load_env()
-    console.print(Panel.fit("[bold]orb-ntfy 設定精靈[/bold]\n一步一步設定資料來源、股票清單和通知管道。\n"
+    console.print(Panel.fit("[bold]orb-radar 設定精靈[/bold]\n一步一步設定資料來源、股票清單和通知管道。\n"
                             "一般設定寫進 [cyan]config.toml[/cyan]，密鑰寫進 [cyan].env[/cyan]（不會被 git 追蹤）。\n"
                             "隨時按 Ctrl+C 離開，不會寫入任何檔案。", border_style="blue"))
     if os.path.exists(cfg_path) and not Confirm.ask("已經有 config.toml，要覆蓋嗎？", default=False):
         console.print("沒有變更。")
         return
     env = {}
+    counter = iter(range(1, 10))
+
+    def step(name):
+        return f"\n[bold cyan]【{next(counter)}】{name}[/bold cyan]"
 
     # 1. 資料來源
-    console.print("\n[bold cyan]① 行情資料來源[/bold cyan]")
+    console.print(step("行情資料來源"))
     keys = list(orb_config.SOURCES)
     for i, k in enumerate(keys, 1):
         console.print(f"  {i}. [bold]{k}[/bold]  {orb_config.SOURCES[k]}")
@@ -143,7 +150,7 @@ def cmd_init(argv):
     simulation = False
 
     if source == "shioaji":
-        console.print("\n[bold cyan]② 永豐 Shioaji 設定[/bold cyan]\n"
+        console.print(step("永豐 Shioaji 設定") + "\n"
                       "  到永豐金證券網站「API 管理」申請 API Key 與 Secret Key（只看行情不需要憑證 CA）。\n"
                       "  金鑰只會存在這台電腦的 .env。")
         old_key, old_secret = orb_config.shioaji_keys()
@@ -157,12 +164,12 @@ def cmd_init(argv):
                 console.print("  " + test_shioaji_login(key, secret, simulation))
 
     # 3. 股票
-    console.print("\n[bold cyan]③ 監控的股票[/bold cyan]  用逗號或空白分隔；純數字視為上市（.TW），上櫃請加 .TWO")
+    console.print(step("監控的股票") + "  用逗號或空白分隔；純數字視為上市（.TW），上櫃請加 .TWO")
     symbols = normalize_symbols(Prompt.ask("  股票", default="2330, 2317, 2454"))
     console.print("  → " + "、".join(symbols))
 
     # 4. 通知
-    console.print("\n[bold cyan]④ 通知管道[/bold cyan]  可以多選，訊號會同時送到每個管道")
+    console.print(step("通知管道") + "  可以多選，訊號會同時送到每個管道")
     names = list(notifiers.CHANNELS)
     ready = set(notifiers.configured())
     for i, n in enumerate(names, 1):
@@ -176,8 +183,8 @@ def cmd_init(argv):
             chosen.append(names[int(x) - 1])
     chosen = list(dict.fromkeys(chosen))
     if "ntfy" in chosen:
-        console.print("  [yellow]注意：ntfy.sh 上沒有設定存取控制的主題，任何知道名稱的人都能讀寫；"
-                      "請用難猜的名稱，也不要推送帳戶或持股資訊。[/yellow]")
+        console.print("  [yellow]注意：ntfy.sh 上沒有設定存取控制的主題，任何知道名稱的人都能讀寫。\n"
+                      "  請用難猜的名稱，也不要推送帳戶或持股資訊。[/yellow]")
     for n in chosen:
         env.update(setup_channel(notifiers.CHANNELS[n], env))
     if chosen and Confirm.ask("\n  現在送一則測試通知到每個管道？", default=True):
@@ -191,7 +198,7 @@ def cmd_init(argv):
             console.print(f"  ✓ {n} 已送出，請確認有收到" if not err else f"  [red]✗ {n}：{err}[/red]")
 
     # 5. 策略
-    console.print("\n[bold cyan]⑤ 策略參數[/bold cyan]  開盤區間 15 分、量能 1.5 倍、停損在區間另一端、目標 2R")
+    console.print(step("策略參數") + "  開盤區間 15 分、量能 1.5 倍、停損在區間另一端、目標 2R")
     p = {"open_mins": 15, "vol_factor": 1.5, "stop_mode": "range", "target_r": 2.0}
     if not Confirm.ask("  使用預設值？", default=True):
         p["open_mins"] = IntPrompt.ask("  開盤區間分鐘數", default=15)
@@ -209,7 +216,7 @@ def cmd_init(argv):
         f"已寫入 [cyan]{os.path.relpath(cfg_path)}[/cyan]" + (f" 與 [cyan]{os.path.relpath(env_path)}[/cyan]" if env else "") +
         "\n\n接下來：\n"
         "  [bold]python orb.py fake[/bold]    用假資料完整試跑（約 2 分鐘，會發 [假資料] 通知）\n"
-        "  [bold]python orb.py check[/bold]   檢查資料來源與推播\n"
+        "  [bold]python orb.py check[/bold]   檢查資料來源與通知\n"
         "  [bold]python orb.py run[/bold]     開始盤中監控", title="完成", border_style="green"))
 
 
@@ -217,7 +224,7 @@ def cmd_init(argv):
 def cmd_check(argv):
     import pytz
 
-    import orb_multi_yf_ntfy as mon
+    import orb_monitor as mon
 
     args = mon.parse_args(argv)
     ok = True
@@ -303,7 +310,7 @@ def main():
     if cmd == "check":
         return cmd_check(rest)
     if cmd in ("run", "fake", "demo"):
-        import orb_multi_yf_ntfy as mon
+        import orb_monitor as mon
 
         extra = [] if cmd == "run" else ["--source", cmd]
         return mon.main(extra + rest)

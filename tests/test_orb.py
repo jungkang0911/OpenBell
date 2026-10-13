@@ -9,7 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import orb_core as core  # noqa: E402
-import orb_multi_yf_ntfy as mon  # noqa: E402
+import orb_monitor as mon  # noqa: E402
 
 TZ = pytz.timezone("Asia/Taipei")
 

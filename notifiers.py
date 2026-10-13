@@ -71,7 +71,7 @@ class Notifier:
 class Ntfy(Notifier):
     name, label = "ntfy", "ntfy（免費手機推播 App）"
     env = (("NTFY_TOPIC", "主題名稱", True, False), ("NTFY_TOKEN", "存取權杖（有存取控制才需要）", False, True))
-    help = "手機安裝 ntfy App 並訂閱同一個主題。ntfy.sh 上沒設存取控制的主題任何人都能讀寫，請用難猜的名稱。"
+    help = "手機安裝 ntfy App 並訂閱同一個主題。"
 
     def send(self, title, message, tags=None, priority=3, click=None):
         payload = {"topic": self.cfg["NTFY_TOPIC"], "title": title, "message": message, "priority": priority}
@@ -167,7 +167,7 @@ class Email(Notifier):
         msg["Subject"] = title
         msg["From"] = c.get("EMAIL_FROM") or c["SMTP_USER"]
         msg["To"] = c["EMAIL_TO"]
-        msg.set_content(message + (f"\n\n線圖：{click}" if click else "") + f"\n\n— orb-ntfy {datetime.now():%Y-%m-%d %H:%M:%S}")
+        msg.set_content(message + (f"\n\n線圖：{click}" if click else "") + f"\n\n— orb-radar {datetime.now():%Y-%m-%d %H:%M:%S}")
         port = int(c.get("SMTP_PORT") or 587)
         try:
             if port == 465:

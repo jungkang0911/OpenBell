@@ -1,6 +1,6 @@
 """
 ORB（開盤區間突破）共用邏輯：指標、訊號、出場模擬、通知文字。
-orb_multi_yf_ntfy.py（盤中監控）、replay_min.py（重播）、backtest.py（回測）共用同一套判斷。
+orb_monitor.py（盤中監控）、replay_min.py（重播）、backtest.py（回測）共用同一套判斷。
 """
 
 from dataclasses import dataclass

@@ -113,7 +113,7 @@ def toml_str(v):
 
 def render_config(c):
     """依設定精靈的結果產生帶註解的 config.toml。"""
-    return f"""# orb-ntfy 設定檔（python orb.py init 產生，可以直接編輯）
+    return f"""# orb-radar 設定檔（python orb.py init 產生，可以直接編輯）
 # 密鑰（ntfy 主題、永豐 API Key）放在 .env，不要寫在這裡。
 
 [data]

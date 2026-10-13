@@ -3,7 +3,7 @@
 """
 replay_min.py
 模擬開盤重播 1 分鐘 K CSV，符合 ORB（開盤區間突破）條件時發送通知。
-用來確認手機收得到通知、通知長什麼樣子。想看即時表格請用 orb_multi_yf_ntfy.py --demo。
+用來確認手機收得到通知、通知長什麼樣子。想看即時表格請用 orb_monitor.py --demo。
 """
 
 import argparse

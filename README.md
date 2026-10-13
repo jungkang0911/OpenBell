@@ -1,4 +1,6 @@
-# 📈 orb-ntfy：台股開盤區間突破（ORB）監控
+# 📡 orb-radar：台股開盤區間突破（ORB）監控
+
+> 前身為 orb-ntfy。通知不再只限 ntfy，所以改名。
 
 盯著開盤 15 分鐘的高低點，**帶量突破就通知你**（ntfy、Telegram、Discord、Slack、LINE、Email、Pushover 或自訂 Webhook，可以同時開多個）：附進場價、停損、目標價，點一下就開 K 線圖。
 收盤後再推一則總結，告訴你每筆訊號最後是達標、停損，還是收盤平倉。
@@ -25,8 +27,8 @@
 ## 🚀 快速開始
 
 ```bash
-git clone https://github.com/jungkang0911/orb-ntfy.git
-cd orb-ntfy
+git clone https://github.com/jungkang0911/orb-radar.git
+cd orb-radar
 python3 -m venv .venv && source .venv/bin/activate   # Windows：.venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -273,7 +275,7 @@ python backtest.py --source fake --symbols 2330.TW,2317.TW --days 20
 | `--market-open` / `--market-close` / `--timezone` | 交易時段與時區 | 09:00 / 13:30 / Asia/Taipei |
 | `--config` | 指定設定檔 | `config.toml` |
 
-`orb_multi_yf_ntfy.py` 和 `replay_min.py` 仍可單獨執行，參數相同。
+`orb_monitor.py` 和 `replay_min.py` 仍可單獨執行，參數相同；舊檔名 `orb_multi_yf_ntfy.py` 仍可使用。
 
 ---
 
@@ -290,9 +292,10 @@ python backtest.py --source fake --symbols 2330.TW,2317.TW --days 20
 ## 🗂 專案結構
 
 ```
-orb-ntfy/
+orb-radar/
 ├── orb.py                   # 主入口：init / check / demo / fake / run / backtest
-├── orb_multi_yf_ntfy.py     # 盤中監控（即時表格 + 通知 + 收盤總結）
+├── orb_monitor.py           # 盤中監控（即時表格 + 通知 + 收盤總結）
+├── orb_multi_yf_ntfy.py     # 舊檔名相容
 ├── orb_core.py              # 策略邏輯：開盤區間、訊號、出場模擬
 ├── notifiers.py             # 通知管道：ntfy、Telegram、Discord、Slack、LINE、Email、Pushover、Webhook
 ├── feeds.py                 # 行情來源：Yahoo、永豐 Shioaji、假資料、CSV 重播

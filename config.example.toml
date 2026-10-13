@@ -1,4 +1,4 @@
-# orb-ntfy 設定檔範例：複製成 config.toml 後修改，或執行 python orb.py init 產生
+# orb-radar 設定檔範例：複製成 config.toml 後修改，或執行 python orb.py init 產生
 # 密鑰（ntfy 主題、永豐 API Key）放在 .env，不要寫在這裡。
 
 [data]

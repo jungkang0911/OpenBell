@@ -8,13 +8,13 @@
 """
 import glob, os, sys, datetime as dt
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT); sys.argv = sys.argv[:1] + ["--demo"]
+sys.path.insert(0, ROOT)
 import pytz
 from PIL import Image, ImageDraw, ImageFont
 from rich.console import Console
 from rich.cells import cell_len
 from rich.color import ColorType
-import orb_multi_yf_ntfy as m
+import orb_monitor as m
 
 COLS, FS = 104, 17
 LAT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", FS)
@@ -36,17 +36,18 @@ def rgb(color, default):
 
 def mix(a, b, k): return tuple(round(x * (1 - k) + y * k) for x, y in zip(a, b))
 
-def draw_frame(renderable):
-    con = Console(width=COLS, force_terminal=True, color_system="truecolor", legacy_windows=False)
-    lines = con.render_lines(renderable, con.options.update(width=COLS), pad=True)
+def draw_frame(renderable, title="python orb.py demo", cols=None):
+    cols = cols or COLS
+    con = Console(width=cols, force_terminal=True, color_system="truecolor", legacy_windows=False)
+    lines = con.render_lines(renderable, con.options.update(width=cols), pad=True)
     lines = [l for l in lines]
     # 視窗外框（仿終端機）
-    W = COLS * CW + PAD * 2; H = len(lines) * LH + PAD * 2 + 30
+    W = cols * CW + PAD * 2; H = len(lines) * LH + PAD * 2 + 30
     img = Image.new("RGB", (W, H), BG); d = ImageDraw.Draw(img)
     d.rectangle([0, 0, W, 30], fill=(40, 46, 54))
     for i, c in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
         d.ellipse([14 + i * 22, 9, 26 + i * 22, 21], fill=c)
-    d.text((W // 2, 15), "python orb.py demo", font=CJK, fill=(160, 168, 178), anchor="mm")
+    d.text((W // 2, 15), title, font=CJK, fill=(160, 168, 178), anchor="mm")
     y = 30 + PAD
     for line in lines:
         x = PAD
@@ -85,43 +86,48 @@ def _box(d, ch, x, y, c):
     elif ch == "╰": d.line([mx, y, mx, my], fill=c); d.line([mx, my, x + CW, my], fill=c)
     elif ch == "╯": d.line([mx, y, mx, my], fill=c); d.line([x, my, mx, my], fill=c)
 
-tz = pytz.timezone("Asia/Taipei")
-args = m.build_parser().parse_args(); day = dt.date(2026, 10, 13)
-full = m.demo_feed(tz, sorted(glob.glob(os.path.join(ROOT, "data", "*.csv"))), day)
-args.notify, args.tui, args.exit_after_close = "print", True, True
-args.max_signal_age = 10**6; args.market_close = "10:30"
-sim = {"t": tz.localize(dt.datetime(2026, 10, 13, 8, 58, 30))}
-b = m.Board(args, list(full))
-frames = []
+def main():
+    tz = pytz.timezone("Asia/Taipei")
+    args = m.build_parser().parse_args(["--demo"]); day = dt.date(2026, 10, 13)
+    full = m.demo_feed(tz, sorted(glob.glob(os.path.join(ROOT, "data", "*.csv"))), day)
+    args.notify, args.tui, args.exit_after_close = "print", True, True
+    args.max_signal_age = 10**6; args.market_close = "10:30"
+    sim = {"t": tz.localize(dt.datetime(2026, 10, 13, 8, 58, 30))}
+    b = m.Board(args, list(full))
+    frames = []
 
-def want(t):
-    hm = t.strftime("%H:%M:%S")
-    if hm < "09:00:00": return 900
-    if hm < "09:16:00": return 350 if t.second == 0 else None
-    if "09:28:00" <= hm <= "09:36:00" or "09:40:00" <= hm <= "09:43:00": return 450
-    if "10:04:00" <= hm <= "10:08:00": return 450
-    if hm >= "10:35:00": return 5000
-    if t.minute % 4 == 0 and t.second == 0: return 300
-    return None
+    def want(t):
+        hm = t.strftime("%H:%M:%S")
+        if hm < "09:00:00": return 900
+        if hm < "09:16:00": return 350 if t.second == 0 else None
+        if "09:28:00" <= hm <= "09:36:00" or "09:40:00" <= hm <= "09:43:00": return 450
+        if "10:04:00" <= hm <= "10:08:00": return 450
+        if hm >= "10:35:00": return 5000
+        if t.minute % 4 == 0 and t.second == 0: return 300
+        return None
 
-def sleep(x):
-    dur = want(sim["t"])
-    if dur:
-        b.clock = sim["t"]
-        frames.append((draw_frame(b.render()), dur))
-    sim["t"] += dt.timedelta(seconds=x)
+    def sleep(x):
+        dur = want(sim["t"])
+        if dur:
+            b.clock = sim["t"]
+            frames.append((draw_frame(b.render()), dur))
+        sim["t"] += dt.timedelta(seconds=x)
 
-mon = m.Monitor(args, list(full), tz, b,
-                fetch=lambda s: {k: full[k][full[k].index <= sim["t"]].copy() for k in s},
-                clock=lambda: sim["t"], sleep=sleep)
-mon.run()
-b.clock = sim["t"]; b.status = "已收盤"
-frames.append((draw_frame(b.render()), 6000))
-H = max(f.height for f, _ in frames)
-imgs = []
-for f, _ in frames:
-    canvas = Image.new("RGB", (frames[0][0].width, H), BG); canvas.paste(f, (0, 0)); imgs.append(canvas)
-pal = [im.quantize(colors=128, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE) for im in imgs]
-out = os.path.join(ROOT, "docs", "demo.gif")
-pal[0].save(out, save_all=True, append_images=pal[1:], duration=[d for _, d in frames], loop=0, optimize=True, disposal=1)
-print(f"{out}: {len(frames)} frames, {imgs[0].size[0]}x{imgs[0].size[1]}")
+    mon = m.Monitor(args, list(full), tz, b,
+                    fetch=lambda s: {k: full[k][full[k].index <= sim["t"]].copy() for k in s},
+                    clock=lambda: sim["t"], sleep=sleep)
+    mon.run()
+    b.clock = sim["t"]; b.status = "已收盤"
+    frames.append((draw_frame(b.render()), 6000))
+    H = max(f.height for f, _ in frames)
+    imgs = []
+    for f, _ in frames:
+        canvas = Image.new("RGB", (frames[0][0].width, H), BG); canvas.paste(f, (0, 0)); imgs.append(canvas)
+    pal = [im.quantize(colors=128, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE) for im in imgs]
+    out = os.path.join(ROOT, "docs", "demo.gif")
+    pal[0].save(out, save_all=True, append_images=pal[1:], duration=[d for _, d in frames], loop=0, optimize=True, disposal=1)
+    print(f"{out}: {len(frames)} frames, {imgs[0].size[0]}x{imgs[0].size[1]}")
+
+
+if __name__ == "__main__":
+    main()
