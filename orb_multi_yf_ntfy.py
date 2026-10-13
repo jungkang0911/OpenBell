@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import pytz
 
 import feeds
+import notifiers
 import orb_config
 import orb_core as core
 
@@ -165,8 +166,9 @@ def _fmt_td(td):
 
 
 class Monitor:
-    def __init__(self, args, symbols, tz, board, fetch=fetch_multi_1m, clock=None, sleep=time.sleep):
+    def __init__(self, args, symbols, tz, board, fetch=fetch_multi_1m, clock=None, sleep=time.sleep, channels=None):
         self.args, self.symbols, self.tz, self.board = args, symbols, tz, board
+        self.channels = channels or []
         self.fetch = fetch
         self.clock = clock or (lambda: now_in(tz))
         self.sleep = sleep
@@ -174,21 +176,27 @@ class Monitor:
         self.mclose = core.parse_hhmm(args.market_close)
         self.sent = {s: set() for s in symbols}
         self.attempts = {}
+        self.pending = {}
         self.day = None
         self.summarized = None
         self.title_prefix = "[假資料] " if getattr(args, "source", "") == "fake" else ""
 
-    def notify(self, title, msg, tags=None, priority=3, click=None, style=""):
-        """推播並記到事件欄；回傳是否送達（print 模式一律視為成功）。"""
+    def notify(self, title, msg, tags=None, priority=3, click=None, style="", only=None):
+        """
+        送到所有（或 only 指定的）通知管道並記到事件欄。回傳送失敗的管道名稱 list，空 list 代表全部送達。
+        """
         title = self.title_prefix + title
-        self.board.log(f"{title} ｜ {msg.splitlines()[0]}", style)
-        if self.args.notify != "ntfy":
-            return True
-        err = core.ntfy_publish(self.args.ntfy_topic, title, msg, tags=tags, priority=priority, click=click,
-                                server=self.args.ntfy_server, token=getattr(self.args, "ntfy_token", None))
-        if err:
-            self.board.log(f"推播失敗：{err}", "red")
-        return err is None
+        retry = only is not None
+        self.board.log(f"{title} ｜ {msg.splitlines()[0]}" + ("（重試）" if retry else ""), style)
+        failed = []
+        for ch in self.channels:
+            if only is not None and ch.name not in only:
+                continue
+            err = ch.send(title, msg, tags=tags, priority=priority, click=click)
+            if err:
+                failed.append(ch.name)
+                self.board.log(f"{ch.name} 送出失敗：{err}", "red")
+        return failed
 
     def session(self, d):
         return (self.tz.localize(datetime.combine(d, self.mopen)), self.tz.localize(datetime.combine(d, self.mclose)))
@@ -221,6 +229,7 @@ class Monitor:
                 self.day = today
                 self.sent = {s: set() for s in self.symbols}
                 self.attempts = {}
+                self.pending = {}
                 self.board.rows = {s: {} for s in self.symbols}
 
             if today.weekday() >= 5 or now >= c + timedelta(minutes=5):
@@ -313,13 +322,18 @@ class Monitor:
             if age > timedelta(minutes=a.max_signal_age):
                 self.sent[sym].add(key)
                 self.board.log(f"{title}（{sig.ts:%H:%M}，啟動前已發生，不推播）", "dim")
-            elif self.notify(title, msg, tags=tags, priority=4, click=core.chart_url(sym), style=style):
-                self.sent[sym].add(key)
-            else:  # 送失敗：下次輪詢再試，最多 3 次
-                n = self.attempts[(sym, key)] = self.attempts.get((sym, key), 0) + 1
-                if n >= 3:
+            else:
+                failed = self.notify(title, msg, tags=tags, priority=4, click=core.chart_url(sym), style=style,
+                                     only=self.pending.get((sym, key)))
+                if not failed:
                     self.sent[sym].add(key)
-                    self.board.log(f"{title} 推播失敗 3 次，放棄", "red")
+                    self.pending.pop((sym, key), None)
+                else:  # 只重送失敗的管道，下次輪詢再試，最多 3 次
+                    self.pending[(sym, key)] = set(failed)
+                    n = self.attempts[(sym, key)] = self.attempts.get((sym, key), 0) + 1
+                    if n >= 3:
+                        self.sent[sym].add(key)
+                        self.board.log(f"{title}：{'、'.join(failed)} 送出失敗 3 次，放棄", "red")
         row["signals"] = shown[-2:] if a.every_bar else shown
         return True
 
@@ -373,8 +387,10 @@ def build_parser():
     ap.add_argument("--target-r", type=float, default=2.0, help="目標價 = 進場 ± 風險 × R")
     ap.add_argument("--every-bar", action="store_true", help="每根新 K 棒符合條件都通知（預設每檔每方向每天一次）")
     ap.add_argument("--max-signal-age", type=int, default=5, help="超過幾分鐘的舊訊號不推播（中途啟動時用）")
-    ap.add_argument("--notify", default="ntfy", choices=["ntfy", "print"], help="print = 不推播，只顯示在終端機")
-    ap.add_argument("--ntfy-topic", help="ntfy topic（建議放 .env 的 NTFY_TOPIC）")
+    ap.add_argument("--notify", default=None,
+                    help="通知管道，逗號分隔：" + ",".join(notifiers.CHANNELS) + "；print = 只顯示在終端機。"
+                         "不指定時自動使用 .env 已設定好的管道")
+    ap.add_argument("--ntfy-topic", help="ntfy 主題（建議放 .env 的 NTFY_TOPIC）")
     ap.add_argument("--ntfy-server", default="https://ntfy.sh", help="自架 ntfy 伺服器網址")
     ap.add_argument("--ntfy-token", help="ntfy 存取權杖（建議放 .env 的 NTFY_TOKEN）")
     ap.add_argument("--no-summary", dest="summary", action="store_false", help="收盤不推總結")
@@ -420,6 +436,20 @@ def resolve_symbols(args):
     return list(dict.fromkeys(symbols))
 
 
+def resolve_channels(args):
+    if args.source == "demo":
+        return []
+    names = notifiers.parse_channels(args.notify) if args.notify is not None else notifiers.configured()
+    try:
+        return notifiers.build(names, ntfy_server=args.ntfy_server, ntfy_topic=args.ntfy_topic,
+                               ntfy_token=args.ntfy_token)
+    except SystemExit as e:
+        if args.source == "fake":  # 試跑時不要因為通知沒設好就停下來
+            print(f"{e}\n（假資料試跑改成只顯示在終端機）", flush=True)
+            return []
+        raise
+
+
 def build_source(args, tz, symbols):
     """依 args.source 回傳 (symbols, fetch, clock, sleep)；clock 為 None 表示用真實時間。"""
     if args.source == "yahoo":
@@ -437,7 +467,7 @@ def build_source(args, tz, symbols):
         if not full:
             raise SystemExit("找不到 data/*.csv")
         symbols = list(full)
-        args.notify, args.max_signal_age = "print", 10**6
+        args.max_signal_age = 10**6
         last_bar = max(d.index[-1] for d in full.values())
         args.market_close = (last_bar + timedelta(minutes=1)).strftime("%H:%M")
     else:  # fake
@@ -464,18 +494,14 @@ def main(argv=None):
     symbols = resolve_symbols(args)
     if args.source != "demo" and not symbols:
         raise SystemExit("沒有設定股票：請執行 python orb.py init，或用 --symbols / --symbols-file 指定")
-    if args.notify == "ntfy" and args.source == "fake" and not args.ntfy_topic:
-        print("（沒有設定 NTFY_TOPIC，假資料試跑改成只顯示在終端機）", flush=True)
-        args.notify = "print"
-    if args.notify == "ntfy" and args.source != "demo" and not args.ntfy_topic:
-        raise SystemExit("沒有設定 ntfy 主題：請在 .env 設定 NTFY_TOPIC（或執行 python orb.py init），"
-                         "或用 --notify print 只顯示不推播")
+    channels = resolve_channels(args)
     symbols, fetch, clock, sleep = build_source(args, tz, symbols)
 
     console = Console() if Console else None
     args.tui = bool(args.tui and console and console.is_terminal)
     board = Board(args, symbols)
-    mon = Monitor(args, symbols, tz, board, fetch=fetch, clock=clock, sleep=sleep)
+    mon = Monitor(args, symbols, tz, board, fetch=fetch, clock=clock, sleep=sleep, channels=channels)
+    board.log("通知管道：" + ("、".join(c.label for c in channels) if channels else "只顯示在終端機"), "dim")
     if not args.tui:
         print(f"Start ORB | source={args.source} | N={len(symbols)} | ORB={args.open_mins}m | volF={args.vol_factor}",
               flush=True)

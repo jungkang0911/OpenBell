@@ -83,7 +83,7 @@ def test_monitor_full_day_simulation():
     board = mon.Board(args, list(full))
     m = mon.Monitor(args, list(full), TZ, board, fetch=fetch, clock=lambda: clock["t"], sleep=sleep)
     sent = []
-    m.notify = lambda title, msg, **kw: sent.append((clock["t"].strftime("%H:%M"), title)) or True
+    m.notify = lambda title, msg, **kw: sent.append((clock["t"].strftime("%H:%M"), title)) or []
     m.run()
     titles = [t for _, t in sent]
     assert sorted(titles[:2]) == ["2317.TW 空頭跌破 98.61", "2330.TW 多頭突破 102.14"]
@@ -125,10 +125,21 @@ def test_notify_failure_is_retried_then_given_up():
     m = mon.Monitor(args, list(full), TZ, mon.Board(args, list(full)), fetch=lambda s: {k: v.copy() for k, v in full.items()},
                     clock=lambda: now)
     calls = []
-    m.notify = lambda title, msg, **kw: calls.append(title) and False
+
+    class Ch:
+        def __init__(self, name, ok):
+            self.name, self.ok = name, ok
+
+        def send(self, title, msg, **kw):
+            calls.append((self.name, title))
+            return None if self.ok else "boom"
+
+    m.channels = [Ch("good", True), Ch("bad", False)]
     for _ in range(5):
         m.poll(now)
-    assert calls == ["2330.TW 多頭突破 102.14"] * 3  # 失敗重試，第 3 次後放棄
+    t = "2330.TW 多頭突破 102.14"
+    # 第一次兩個都送；之後只重送失敗的 bad，第 3 次失敗後放棄
+    assert calls == [("good", t), ("bad", t), ("bad", t), ("bad", t)]
 
 
 def test_config_toml_and_env(tmp_path, monkeypatch):
@@ -137,7 +148,8 @@ def test_config_toml_and_env(tmp_path, monkeypatch):
     cfg = tmp_path / "config.toml"
     cfg.write_text(orb_config.render_config({
         "source": "fake", "poll_secs": 20, "symbols": ["2330.TW", "6488.TWO"], "open_mins": 30,
-        "vol_factor": 2.0, "stop_mode": "mid", "target_r": 1.5, "notify": "print", "shioaji_simulation": True,
+        "vol_factor": 2.0, "stop_mode": "mid", "target_r": 1.5, "channels": ["telegram", "discord"],
+        "shioaji_simulation": True,
     }), encoding="utf-8")
     env = tmp_path / ".env"
     env.write_text("NTFY_TOPIC=from-env\nSHIOAJI_API_KEY='k'\n", encoding="utf-8")
@@ -149,6 +161,7 @@ def test_config_toml_and_env(tmp_path, monkeypatch):
     assert args.source == "fake" and args.poll_secs == 20 and args.open_mins == 30
     assert args.symbols == "2330.TW,6488.TWO" and args.stop_mode == "mid" and args.shioaji_simulation is True
     assert args.vol_factor == 1.2  # 命令列優先
+    assert args.notify == "telegram,discord"
     assert args.ntfy_topic == "from-env" and os.environ["SHIOAJI_API_KEY"] == "k"
 
 
@@ -203,3 +216,120 @@ def test_cli_helpers(tmp_path):
     orb.write_env(str(env), {"NTFY_TOPIC": "new", "NTFY_TOKEN": None, "SHIOAJI_API_KEY": "k"})
     assert env.read_text(encoding="utf-8").splitlines() == ["# keep", "NTFY_TOPIC=new", "OTHER=1", "SHIOAJI_API_KEY=k"]
     assert (env.stat().st_mode & 0o777) == 0o600
+
+
+def test_notifier_payloads(monkeypatch):
+    import notifiers
+
+    posts = []
+
+    class Resp:
+        status_code, text = 200, "ok"
+
+    monkeypatch.setattr(notifiers.requests, "post", lambda url, **kw: posts.append((url, kw)) or Resp())
+    args = ("2330.TW 多頭突破 102.14", "做多 102.14（09:30）\n停損 98.80")
+    kw = dict(tags=["red_circle"], priority=4, click="https://example.com/chart")
+
+    cases = {
+        "ntfy": {"NTFY_TOPIC": "t", "NTFY_TOKEN": "tk", "server": "https://ntfy.example"},
+        "telegram": {"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "42"},
+        "discord": {"DISCORD_WEBHOOK_URL": "https://discord.example/hook"},
+        "slack": {"SLACK_WEBHOOK_URL": "https://hooks.slack.example/x"},
+        "line": {"LINE_CHANNEL_ACCESS_TOKEN": "L", "LINE_TO": "U1"},
+        "pushover": {"PUSHOVER_TOKEN": "a", "PUSHOVER_USER": "u"},
+        "webhook": {"WEBHOOK_URL": "https://hook.example"},
+    }
+    for name, cfg in cases.items():
+        assert notifiers.CHANNELS[name](**cfg).send(*args, **kw) is None, name
+    got = dict(zip(cases, posts))
+    url, k = got["ntfy"]
+    assert url == "https://ntfy.example/" and k["json"]["title"] == args[0] and k["headers"]["Authorization"] == "Bearer tk"
+    url, k = got["telegram"]
+    assert url == "https://api.telegram.org/bot123:abc/sendMessage" and k["json"]["chat_id"] == "42"
+    assert "停損" in k["json"]["text"] and "example.com/chart" in k["json"]["text"]
+    assert got["discord"][1]["json"]["embeds"][0]["color"] == 0xE74C3C  # 多 = 紅
+    assert got["slack"][1]["json"]["text"].startswith("*2330.TW")
+    url, k = got["line"]
+    assert url.endswith("/v2/bot/message/push") and k["json"]["to"] == "U1" and k["headers"]["Authorization"] == "Bearer L"
+    assert got["pushover"][1]["data"]["priority"] == 1
+    assert got["webhook"][1]["json"]["click"] == "https://example.com/chart"
+
+
+def test_notifier_errors_and_email(monkeypatch):
+    import notifiers
+
+    class Bad:
+        status_code, text = 401, "unauthorized"
+
+    monkeypatch.setattr(notifiers.requests, "post", lambda url, **kw: Bad())
+    err = notifiers.Slack(SLACK_WEBHOOK_URL="x").send("t", "m")
+    assert "401" in err and "金鑰" in err
+
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            sent["server"] = (host, port)
+
+        def starttls(self):
+            sent["tls"] = True
+
+        def login(self, u, p):
+            sent["login"] = u
+
+        def send_message(self, msg):
+            sent["msg"] = msg
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(notifiers.smtplib, "SMTP", FakeSMTP)
+    e = notifiers.Email(SMTP_HOST="smtp.example", SMTP_USER="me@x", SMTP_PASSWORD="p", EMAIL_TO="a@x,b@x")
+    assert e.send("2330.TW 多頭突破", "內容", click="https://c") is None
+    assert sent["server"] == ("smtp.example", 587) and sent["tls"] and sent["msg"]["To"].replace(" ", "") == "a@x,b@x"
+    assert "https://c" in sent["msg"].get_content()
+
+
+def test_channel_parsing_and_missing_config(monkeypatch):
+    import notifiers
+    import pytest
+
+    assert notifiers.parse_channels("ntfy, Telegram") == ["ntfy", "telegram"]
+    assert notifiers.parse_channels("print") == [] and notifiers.parse_channels(["discord"]) == ["discord"]
+    with pytest.raises(SystemExit):
+        notifiers.parse_channels("fax")
+    for k in ("DISCORD_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(SystemExit, match="TELEGRAM_BOT_TOKEN"):
+        notifiers.build(["telegram"])
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://d")
+    assert "discord" in notifiers.configured()
+
+
+def test_errors_do_not_leak_secrets(monkeypatch):
+    import notifiers
+
+    def boom(url, **kw):
+        raise ConnectionError(f"cannot reach {url}")
+
+    monkeypatch.setattr(notifiers.requests, "post", boom)
+    err = notifiers.Telegram(TELEGRAM_BOT_TOKEN="123456:SECRET", TELEGRAM_CHAT_ID="1").send("t", "m")
+    assert "SECRET" not in err and "***" in err
+    err = notifiers.Discord(DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/1/tok").send("t", "m")
+    assert "tok" not in err
+
+
+def test_env_inline_comments(tmp_path, monkeypatch):
+    import orb_config
+
+    env = tmp_path / ".env"
+    env.write_text("A_TOKEN=          # 選填\nB_PORT=587  # 註解\nC_URL=https://x/#frag\nD_Q=\"has # hash\"  # c\n#E=1\n",
+                   encoding="utf-8")
+    for k in ("A_TOKEN", "B_PORT", "C_URL", "D_Q", "E"):
+        monkeypatch.delenv(k, raising=False)
+    orb_config.load_env(str(env))
+    assert os.environ["A_TOKEN"] == "" and os.environ["B_PORT"] == "587"
+    assert os.environ["C_URL"] == "https://x/#frag" and os.environ["D_Q"] == "has # hash" and "E" not in os.environ

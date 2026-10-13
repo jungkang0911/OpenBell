@@ -1,5 +1,5 @@
 """
-ORB（開盤區間突破）共用邏輯：指標、訊號、出場模擬、ntfy 推播。
+ORB（開盤區間突破）共用邏輯：指標、訊號、出場模擬、通知文字。
 orb_multi_yf_ntfy.py（盤中監控）、replay_min.py（重播）、backtest.py（回測）共用同一套判斷。
 """
 
@@ -8,7 +8,6 @@ from datetime import datetime, time, timedelta
 
 import numpy as np
 import pandas as pd
-import requests
 
 
 @dataclass
@@ -155,21 +154,8 @@ def format_signal(sig: Signal):
 
 
 def ntfy_publish(topic, title, message, tags=None, priority=3, click=None, server="https://ntfy.sh", token=None):
-    """
-    用 JSON 發佈（標題可以放中文）。成功回傳 None，失敗回傳錯誤訊息。
-    token：有設定存取控制的 topic 用的權杖（ntfy 的 access token，tk_ 開頭）。
-    """
-    payload = {"topic": topic, "title": title, "message": message, "priority": priority}
-    if tags:
-        payload["tags"] = tags
-    if click:
-        payload["click"] = click
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    try:
-        r = requests.post(server.rstrip("/") + "/", json=payload, headers=headers, timeout=10)
-    except Exception as e:
-        return f"連線失敗：{e}"
-    if r.status_code >= 300:
-        hint = "（權杖錯誤或沒有這個 topic 的寫入權限）" if r.status_code in (401, 403) else ""
-        return f"HTTP {r.status_code}{hint} {r.text[:200]}"
-    return None
+    """舊介面相容：送一則 ntfy。成功回傳 None，失敗回傳錯誤訊息。新程式請用 notifiers 模組。"""
+    import notifiers
+
+    return notifiers.Ntfy(NTFY_TOPIC=topic, NTFY_TOKEN=token, server=server).send(
+        title, message, tags=tags, priority=priority, click=click)

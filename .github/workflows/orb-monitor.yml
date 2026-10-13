@@ -3,8 +3,10 @@ name: ORB 盤中監控
 # 每個交易日 08:40（台北）啟動，收盤推完總結後自動結束。
 #
 # 設定（Settings → Secrets and variables → Actions）：
-#   Secrets：NTFY_TOPIC（必填）、NTFY_TOKEN（選填）
-#            SHIOAJI_API_KEY、SHIOAJI_SECRET_KEY（用永豐才需要）
+#   Secrets：要用的通知管道金鑰，名稱同 .env.example，例如
+#            NTFY_TOPIC、TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID、DISCORD_WEBHOOK_URL…
+#            有設定齊全的管道會自動啟用（或在 config.toml 的 notify.channels 指定）
+#            用永豐再加 SHIOAJI_API_KEY、SHIOAJI_SECRET_KEY
 #   Variables：ORB_SOURCE = yahoo 或 shioaji（不設定就用 config.toml，沒有 config.toml 則是 yahoo）
 # 股票清單與策略參數：commit 一份 config.toml（python orb.py init 產生），或改 symbols.txt。
 on:
@@ -38,6 +40,21 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_TO: ${{ secrets.LINE_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           SHIOAJI_API_KEY: ${{ secrets.SHIOAJI_API_KEY }}
           SHIOAJI_SECRET_KEY: ${{ secrets.SHIOAJI_SECRET_KEY }}
           ORB_SOURCE: ${{ vars.ORB_SOURCE }}

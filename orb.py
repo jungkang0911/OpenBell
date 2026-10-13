@@ -2,15 +2,16 @@
 """
 orb-ntfy 主入口。
 
-  python orb.py init        互動設定精靈（資料來源、永豐金鑰、股票、推播）
-  python orb.py check       檢查設定、資料來源、推播是否正常
-  python orb.py fake        用假資料完整試跑一次（快轉，含推播）
+  python orb.py init        互動設定精靈（資料來源、永豐金鑰、股票、通知管道）
+  python orb.py check       檢查設定、資料來源、通知是否正常
+  python orb.py fake        用假資料完整試跑一次（快轉，會發通知）
   python orb.py demo        重播 data/*.csv（快轉，不推播）
   python orb.py run         盤中監控（讀 config.toml）
   python orb.py backtest    回測（參數同 backtest.py）
 
 run / fake / demo 後面可以接任何 orb_multi_yf_ntfy.py 的參數，例如：
   python orb.py run --vol-factor 2 --notify print
+  python orb.py run --notify telegram,discord
 """
 
 import os
@@ -18,6 +19,7 @@ import secrets
 import sys
 from datetime import datetime
 
+import notifiers
 import orb_config
 
 try:
@@ -85,18 +87,46 @@ def test_shioaji_login(key, secret, simulation):
         return f"失敗：{e}"
 
 
-def send_test(topic, server, token, prefix="測試通知"):
-    import orb_core as core
+def send_test(channel, prefix="測試通知"):
+    return channel.send(f"orb-ntfy {prefix}", f"收到這則就代表 {channel.name} 設定正確 ✅\n{datetime.now():%Y-%m-%d %H:%M:%S}",
+                        tags=["white_check_mark"], priority=3)
 
-    return core.ntfy_publish(topic, f"orb-ntfy {prefix}", f"收到這則就代表推播設定正確 ✅\n{datetime.now():%Y-%m-%d %H:%M:%S}",
-                             tags=["white_check_mark"], server=server, token=token)
+
+def setup_channel(cls, env):
+    """互動輸入一個通知管道的設定，回傳要寫進 .env 的值。"""
+    console.print(f"\n  [bold]{cls.label}[/bold]\n  [dim]{cls.help}[/dim]")
+    values = {}
+    for var, desc, required, secret in cls.env:
+        current = env.get(var) or os.environ.get(var, "")
+        if var == "NTFY_TOPIC" and not current:
+            current = f"orb-{secrets.token_urlsafe(9)}"
+        if var == "TELEGRAM_CHAT_ID" and not current and values.get("TELEGRAM_BOT_TOKEN"):
+            Prompt.ask("  先在 Telegram 傳任何一則訊息給你的 bot，然後按 Enter", default="", show_default=False)
+            try:
+                found = notifiers.Telegram.find_chat_ids(values["TELEGRAM_BOT_TOKEN"])
+            except Exception as e:
+                found = []
+                console.print(f"  [yellow]自動抓 Chat ID 失敗：{e}[/yellow]")
+            if found:
+                for cid, nm in found:
+                    console.print(f"  找到 {cid}（{nm}）")
+                current = found[-1][0]
+        label = f"  {var}：{desc}" + ("" if required else "（選填，Enter 略過）")
+        kw = {"password": secret}
+        if current:
+            kw.update(default=current, show_default=not secret)
+        elif not required:
+            kw.update(default="", show_default=False)
+        val = Prompt.ask(label, **kw).strip()
+        values[var] = val or None
+    return values
 
 
 # ---------------------------------------------------------------- init
 def cmd_init(argv):
     cfg_path, env_path = orb_config.DEFAULT_CONFIG, orb_config.DEFAULT_ENV
     orb_config.load_env()
-    console.print(Panel.fit("[bold]orb-ntfy 設定精靈[/bold]\n一步一步設定資料來源、股票清單和手機推播。\n"
+    console.print(Panel.fit("[bold]orb-ntfy 設定精靈[/bold]\n一步一步設定資料來源、股票清單和通知管道。\n"
                             "一般設定寫進 [cyan]config.toml[/cyan]，密鑰寫進 [cyan].env[/cyan]（不會被 git 追蹤）。\n"
                             "隨時按 Ctrl+C 離開，不會寫入任何檔案。", border_style="blue"))
     if os.path.exists(cfg_path) and not Confirm.ask("已經有 config.toml，要覆蓋嗎？", default=False):
@@ -131,23 +161,34 @@ def cmd_init(argv):
     symbols = normalize_symbols(Prompt.ask("  股票", default="2330, 2317, 2454"))
     console.print("  → " + "、".join(symbols))
 
-    # 4. 推播
-    console.print("\n[bold cyan]④ 手機推播（ntfy）[/bold cyan]\n"
-                  "  手機安裝 ntfy App，訂閱同一個主題就會收到通知。\n"
-                  "  [yellow]注意：ntfy.sh 上沒有設定存取控制的主題，任何知道名稱的人都能讀寫，"
-                  "請用猜不到的名稱，也不要推送帳戶或持股資訊。[/yellow]")
-    use_ntfy = Confirm.ask("  要推播到手機嗎？（n = 只顯示在終端機）", default=True)
-    notify = "ntfy" if use_ntfy else "print"
-    if use_ntfy:
-        topic = Prompt.ask("  主題名稱", default=os.environ.get("NTFY_TOPIC") or f"orb-{secrets.token_urlsafe(9)}")
-        server = Prompt.ask("  ntfy 伺服器", default="https://ntfy.sh")
-        token = Prompt.ask("  存取權杖（有設定存取控制才需要，沒有就直接 Enter）", password=True,
-                           default=os.environ.get("NTFY_TOKEN") or "", show_default=False) or None
-        env.update(NTFY_TOPIC=topic, NTFY_TOKEN=token)
-        console.print(f"  手機 App 訂閱：[bold]{topic}[/bold]（瀏覽器也可以開 {server.rstrip('/')}/{topic}）")
-        if Confirm.ask("  現在送一則測試通知？", default=True):
-            err = send_test(topic, server, token)
-            console.print("  ✓ 已送出，請看手機" if not err else f"  [red]送出失敗：{err}[/red]")
+    # 4. 通知
+    console.print("\n[bold cyan]④ 通知管道[/bold cyan]  可以多選，訊號會同時送到每個管道")
+    names = list(notifiers.CHANNELS)
+    ready = set(notifiers.configured())
+    for i, n in enumerate(names, 1):
+        mark = " [green]（.env 已設定）[/green]" if n in ready else ""
+        console.print(f"  {i}. {notifiers.CHANNELS[n].label}{mark}")
+    default = ",".join(str(names.index(n) + 1) for n in names if n in ready)
+    raw = Prompt.ask("  輸入編號，用逗號分隔（直接 Enter = 只顯示在終端機）", default=default, show_default=bool(default))
+    chosen = []
+    for x in raw.replace("，", ",").replace(" ", ",").split(","):
+        if x.strip().isdigit() and 1 <= int(x) <= len(names):
+            chosen.append(names[int(x) - 1])
+    chosen = list(dict.fromkeys(chosen))
+    if "ntfy" in chosen:
+        console.print("  [yellow]注意：ntfy.sh 上沒有設定存取控制的主題，任何知道名稱的人都能讀寫；"
+                      "請用難猜的名稱，也不要推送帳戶或持股資訊。[/yellow]")
+    for n in chosen:
+        env.update(setup_channel(notifiers.CHANNELS[n], env))
+    if chosen and Confirm.ask("\n  現在送一則測試通知到每個管道？", default=True):
+        for k, v in env.items():
+            if v:
+                os.environ[k] = v
+        for n in chosen:
+            ch = notifiers.CHANNELS[n].from_env()
+            miss = ch.missing()
+            err = f"缺少 {', '.join(miss)}" if miss else send_test(ch)
+            console.print(f"  ✓ {n} 已送出，請確認有收到" if not err else f"  [red]✗ {n}：{err}[/red]")
 
     # 5. 策略
     console.print("\n[bold cyan]⑤ 策略參數[/bold cyan]  開盤區間 15 分、量能 1.5 倍、停損在區間另一端、目標 2R")
@@ -160,14 +201,14 @@ def cmd_init(argv):
 
     poll = 30
     with open(cfg_path, "w", encoding="utf-8") as f:
-        f.write(orb_config.render_config({"source": source, "poll_secs": poll, "symbols": symbols, "notify": notify,
+        f.write(orb_config.render_config({"source": source, "poll_secs": poll, "symbols": symbols, "channels": chosen,
                                           "shioaji_simulation": simulation, **p}))
     if env:
         write_env(env_path, env)
     console.print(Panel.fit(
         f"已寫入 [cyan]{os.path.relpath(cfg_path)}[/cyan]" + (f" 與 [cyan]{os.path.relpath(env_path)}[/cyan]" if env else "") +
         "\n\n接下來：\n"
-        "  [bold]python orb.py fake[/bold]    用假資料完整試跑（約 2 分鐘，會推播 [假資料] 通知）\n"
+        "  [bold]python orb.py fake[/bold]    用假資料完整試跑（約 2 分鐘，會發 [假資料] 通知）\n"
         "  [bold]python orb.py check[/bold]   檢查資料來源與推播\n"
         "  [bold]python orb.py run[/bold]     開始盤中監控", title="完成", border_style="green"))
 
@@ -187,10 +228,9 @@ def cmd_check(argv):
     symbols = mon.resolve_symbols(args)
     t.add_row("股票", "、".join(symbols) or "[red]沒有設定[/red]")
     t.add_row("策略", f"區間 {args.open_mins} 分｜量能 {args.vol_factor}x｜停損 {args.stop_mode}｜目標 {args.target_r:g}R")
-    topic = args.ntfy_topic
-    t.add_row("推播", "只顯示在終端機" if args.notify == "print" else
-              f"ntfy　主題 {topic[:4] + '…' if topic else '[red]沒有設定 NTFY_TOPIC[/red]'}"
-              f"　{args.ntfy_server}" + ("　（有權杖）" if args.ntfy_token else ""))
+    names = notifiers.parse_channels(args.notify) if args.notify is not None else notifiers.configured()
+    auto = "（自動偵測 .env）" if args.notify is None else ""
+    t.add_row("通知", ("、".join(names) + auto) if names else "只顯示在終端機")
     console.print(t)
     if not symbols and args.source != "demo":
         ok = False
@@ -231,14 +271,22 @@ def cmd_check(argv):
         console.print(f"  [red]失敗：{e}[/red]")
         ok = False
 
-    if args.notify == "ntfy" and topic:
-        console.print("\n[bold]推播測試[/bold]")
-        if Confirm.ask("  送一則測試通知到手機？", default=True):
-            err = send_test(topic, args.ntfy_server, args.ntfy_token)
-            console.print("  ✓ 已送出（請確認手機有收到）" if not err else f"  [red]失敗：{err}[/red]")
-            ok = ok and not err
-    elif args.notify == "ntfy":
-        ok = False
+    if names:
+        console.print("\n[bold]通知測試[/bold]")
+        chans = []
+        for n in names:
+            ch = notifiers.CHANNELS[n].from_env(**({"server": args.ntfy_server} if n == "ntfy" else {}))
+            miss = ch.missing()
+            if miss:
+                console.print(f"  [red]✗ {n}：.env 缺少 {', '.join(miss)}[/red]")
+                ok = False
+            else:
+                chans.append(ch)
+        if chans and Confirm.ask(f"  送測試通知到 {'、'.join(c.name for c in chans)}？", default=True):
+            for ch in chans:
+                err = send_test(ch)
+                console.print(f"  ✓ {ch.name} 已送出（請確認有收到）" if not err else f"  [red]✗ {ch.name}：{err}[/red]")
+                ok = ok and not err
 
     console.print("\n[bold green]檢查完成，可以執行 python orb.py run[/bold green]" if ok else
                   "\n[bold yellow]有項目需要處理，見上方說明[/bold yellow]")

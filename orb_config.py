@@ -39,7 +39,8 @@ KEYMAP = {
     ("market", "open"): "market_open",
     ("market", "close"): "market_close",
     ("market", "timezone"): "timezone",
-    ("notify", "method"): "notify",
+    ("notify", "method"): "notify",  # 舊名稱
+    ("notify", "channels"): "notify",
     ("notify", "ntfy_topic"): "ntfy_topic",
     ("notify", "ntfy_server"): "ntfy_server",
     ("notify", "summary"): "summary",
@@ -59,7 +60,11 @@ def load_env(path=DEFAULT_ENV):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            k, v = k.strip(), v.strip().strip('"').strip("'")
+            k, v = k.strip(), v.strip()
+            if v[:1] in ('"', "'") and v[1:].find(v[0]) >= 0:  # 有引號：取引號內
+                v = v[1:1 + v[1:].find(v[0])]
+            else:  # 沒引號：去掉行尾註解（# 前面要有空白）
+                v = (" " + v).split(" #", 1)[0].strip()
             if k and k not in os.environ:
                 os.environ[k] = v
 
@@ -80,6 +85,8 @@ def load_config(path=None):
     for (section, key), dest in KEYMAP.items():
         if key in raw.get(section, {}):
             val = raw[section][key]
+            if dest in ("symbols", "notify") and isinstance(val, list):
+                val = ",".join(str(s) for s in val) or "print"
             if dest == "symbols" and isinstance(val, list):
                 val = ",".join(str(s) for s in val)
             if val == "" or val is None:
@@ -134,7 +141,9 @@ close = "13:30"
 timezone = "Asia/Taipei"
 
 [notify]
-method = {toml_str(c['notify'])}       # ntfy = 推播到手機；print = 只顯示在終端機
+# 可多選：ntfy telegram discord slack line email pushover webhook
+# 空的 [] = 只顯示在終端機。各管道的金鑰放在 .env（見 .env.example）
+channels = {toml_str(c['channels'])}
 ntfy_server = "https://ntfy.sh"
 summary = true         # 收盤推總結
 
