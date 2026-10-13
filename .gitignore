@@ -4,3 +4,6 @@ __pycache__/
 trades.csv
 # 密鑰（ntfy 主題、永豐 API Key）
 .env
+
+# 部落格／HackMD 文章草稿不放進 repo
+docs/article-*.md
