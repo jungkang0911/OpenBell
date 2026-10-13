@@ -1,0 +1,38 @@
+# orb-ntfy 設定檔範例：複製成 config.toml 後修改，或執行 python orb.py init 產生
+# 密鑰（ntfy 主題、永豐 API Key）放在 .env，不要寫在這裡。
+
+[data]
+# yahoo   = Yahoo Finance，免費；Yahoo 標示台股延遲 20 分鐘
+# shioaji = 永豐 Shioaji，即時，需要在 .env 設定 SHIOAJI_API_KEY / SHIOAJI_SECRET_KEY
+# fake    = 假資料試跑（每次隨機產生一天行情）
+# demo    = 重播 data/*.csv
+source = "yahoo"
+poll_secs = 30        # 幾秒抓一次資料
+
+[symbols]
+# 上市加 .TW、上櫃加 .TWO；也可以改用 file = "symbols.txt"
+list = ["2330.TW", "2317.TW", "2454.TW"]
+
+[strategy]
+open_mins = 15         # 開盤區間分鐘數
+vol_factor = 1.5      # 量能門檻：成交量 >= 最近 10 根（含當根）平均 × 倍數
+stop_mode = "range"   # range = 區間另一端；mid = 區間中線
+target_r = 2.0        # 目標價 = 進場 ± 風險 × R
+every_bar = false      # true = 每根符合的 K 棒都通知
+
+[market]
+open = "09:00"
+close = "13:30"
+timezone = "Asia/Taipei"
+
+[notify]
+method = "ntfy"       # ntfy = 推播到手機；print = 只顯示在終端機
+ntfy_server = "https://ntfy.sh"
+summary = true         # 收盤推總結
+
+[shioaji]
+simulation = false     # true = 永豐模擬環境
+
+[fake]
+speed = 60             # 假資料快轉倍數；1 = 跟真實時間同步
+seed = 0               # 0 = 每次不同；固定數字 = 每次產生一樣的行情

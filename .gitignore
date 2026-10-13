@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+*.log
+trades.csv
+# 密鑰（ntfy 主題、永豐 API Key）
+.env
