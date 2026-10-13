@@ -1,0 +1,29 @@
+name: ORB 盤中監控
+
+# 每個交易日 08:40（台北）啟動，收盤後自動結束。
+# 使用前：Settings → Secrets and variables → Actions → 新增 secret「NTFY_TOPIC」。
+# 監控清單改 symbols.txt。
+on:
+  schedule:
+    - cron: "40 0 * * 1-5" # UTC 00:40 = 台北 08:40，週一到週五
+  workflow_dispatch:
+
+concurrency:
+  group: orb-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 監控到收盤
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python -u orb_multi_yf_ntfy.py --symbols-file symbols.txt --exit-after-close --no-tui
