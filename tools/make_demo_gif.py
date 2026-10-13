@@ -123,7 +123,13 @@ def main():
     imgs = []
     for f, _ in frames:
         canvas = Image.new("RGB", (frames[0][0].width, H), BG); canvas.paste(f, (0, 0)); imgs.append(canvas)
-    pal = [im.quantize(colors=128, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE) for im in imgs]
+    # 所有格共用同一組 64 色調色盤（取頭、中、尾幾格一起算），GIF 才能只存每格之間變動的區域，檔案小很多
+    picks = [imgs[i] for i in sorted({0, len(imgs) // 3, len(imgs) * 2 // 3, len(imgs) - 1})]
+    sheet = Image.new("RGB", (picks[0].width, picks[0].height * len(picks)))
+    for i, im in enumerate(picks):
+        sheet.paste(im, (0, i * im.height))
+    ref = sheet.quantize(colors=64, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    pal = [im.quantize(palette=ref, dither=Image.Dither.NONE) for im in imgs]
     out = os.path.join(ROOT, "docs", "demo.gif")
     pal[0].save(out, save_all=True, append_images=pal[1:], duration=[d for _, d in frames], loop=0, optimize=True, disposal=1)
     print(f"{out}: {len(frames)} frames, {imgs[0].size[0]}x{imgs[0].size[1]}")
