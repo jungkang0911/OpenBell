@@ -98,7 +98,7 @@ def main():
 
     def want(t):
         hm = t.strftime("%H:%M:%S")
-        if hm < "09:00:00": return 900
+        if hm < "09:00:00": return 600 if hm == "08:59:30" else None  # 開盤前只留一格，動畫一開始就有變化
         if hm < "09:16:00": return 350 if t.second == 0 else None
         if "09:28:00" <= hm <= "09:36:00" or "09:40:00" <= hm <= "09:43:00": return 450
         if "10:04:00" <= hm <= "10:08:00": return 450
