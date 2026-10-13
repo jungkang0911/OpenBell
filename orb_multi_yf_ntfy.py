@@ -1,21 +1,21 @@
 """
 ORB 多標的盤中監控：yfinance 1 分 K（延遲資料）+ ntfy 推播 + 終端機即時表格。
 
-  python orb_multi_yf_ntfy.py --symbols 2330.TW,2317.TW --ntfy-topic MyStockAlert
+  python orb.py run                 # 建議：讀 config.toml（先執行 python orb.py init）
+  python orb_multi_yf_ntfy.py --symbols 2330.TW,2317.TW --notify print
   python orb_multi_yf_ntfy.py --demo            # 用 data/*.csv 快轉重播，看畫面用
 """
 
 import argparse
-import glob
 import os
 import time
 from collections import deque
 from datetime import datetime, timedelta
 
-import pandas as pd
 import pytz
-import yfinance as yf
 
+import feeds
+import orb_config
 import orb_core as core
 
 try:
@@ -31,33 +31,7 @@ except ImportError:  # 沒裝 rich 就用純文字模式
 UP, DOWN = "red", "green"  # 台股習慣：紅漲綠跌
 
 
-def fetch_multi_1m(symbols):
-    """抓最近兩天的 1 分 K（多抓一天是為了拿昨收算漲跌）。"""
-    df = yf.download(
-        tickers=" ".join(symbols),
-        period="2d",
-        interval="1m",
-        prepost=False,
-        progress=False,
-        group_by="ticker",
-        threads=True,
-        auto_adjust=False,
-    )
-    out = {}
-    if isinstance(df.columns, pd.MultiIndex):
-        for sym in symbols:
-            try:
-                dfi = df[sym].copy()
-            except KeyError:
-                continue
-            dfi = dfi.rename(columns=str.title).dropna(how="all")
-            if not dfi.empty:
-                out[sym] = dfi
-    else:
-        dfi = df.rename(columns=str.title).dropna(how="all")
-        if not dfi.empty and len(symbols) == 1:
-            out[symbols[0]] = dfi
-    return out
+fetch_multi_1m = feeds.fetch_yahoo  # 舊名稱相容
 
 
 def now_in(tz):
@@ -199,13 +173,22 @@ class Monitor:
         self.mopen = core.parse_hhmm(args.market_open)
         self.mclose = core.parse_hhmm(args.market_close)
         self.sent = {s: set() for s in symbols}
+        self.attempts = {}
         self.day = None
         self.summarized = None
+        self.title_prefix = "[假資料] " if getattr(args, "source", "") == "fake" else ""
 
     def notify(self, title, msg, tags=None, priority=3, click=None, style=""):
+        """推播並記到事件欄；回傳是否送達（print 模式一律視為成功）。"""
+        title = self.title_prefix + title
         self.board.log(f"{title} ｜ {msg.splitlines()[0]}", style)
-        if self.args.notify == "ntfy":
-            core.ntfy_publish(self.args.ntfy_topic, title, msg, tags=tags, priority=priority, click=click, server=self.args.ntfy_server)
+        if self.args.notify != "ntfy":
+            return True
+        err = core.ntfy_publish(self.args.ntfy_topic, title, msg, tags=tags, priority=priority, click=click,
+                                server=self.args.ntfy_server, token=getattr(self.args, "ntfy_token", None))
+        if err:
+            self.board.log(f"推播失敗：{err}", "red")
+        return err is None
 
     def session(self, d):
         return (self.tz.localize(datetime.combine(d, self.mopen)), self.tz.localize(datetime.combine(d, self.mclose)))
@@ -237,6 +220,7 @@ class Monitor:
             if self.day != today:
                 self.day = today
                 self.sent = {s: set() for s in self.symbols}
+                self.attempts = {}
                 self.board.rows = {s: {} for s in self.symbols}
 
             if today.weekday() >= 5 or now >= c + timedelta(minutes=5):
@@ -323,14 +307,19 @@ class Monitor:
             key = (sig.side, sig.ts)
             if key in self.sent[sym]:
                 continue
-            self.sent[sym].add(key)
             age = now - (sig.ts + timedelta(minutes=1))
             title, msg, tags = core.format_signal(sig)
             style = "bold " + (UP if sig.side == "long" else DOWN)
-            if age <= timedelta(minutes=a.max_signal_age):
-                self.notify(title, msg, tags=tags, priority=4, click=core.chart_url(sym), style=style)
-            else:
+            if age > timedelta(minutes=a.max_signal_age):
+                self.sent[sym].add(key)
                 self.board.log(f"{title}（{sig.ts:%H:%M}，啟動前已發生，不推播）", "dim")
+            elif self.notify(title, msg, tags=tags, priority=4, click=core.chart_url(sym), style=style):
+                self.sent[sym].add(key)
+            else:  # 送失敗：下次輪詢再試，最多 3 次
+                n = self.attempts[(sym, key)] = self.attempts.get((sym, key), 0) + 1
+                if n >= 3:
+                    self.sent[sym].add(key)
+                    self.board.log(f"{title} 推播失敗 3 次，放棄", "red")
         row["signals"] = shown[-2:] if a.every_bar else shown
         return True
 
@@ -357,25 +346,21 @@ class Monitor:
 
 
 def demo_feed(tz, files, start_day):
-    """把 CSV 平移到今天，依模擬時鐘逐步釋出，模擬盤中行情。"""
-    full = {}
-    for f in files:
-        sym = os.path.splitext(os.path.basename(f))[0]
-        d = pd.read_csv(f, encoding="utf-8-sig")
-        d = d.rename(columns=str.title)
-        d["Datetime"] = pd.to_datetime(d["Datetime"])
-        d = d.set_index("Datetime").sort_index()
-        d.index = pd.DatetimeIndex([tz.localize(datetime.combine(start_day, t.time())) for t in d.index])
-        # 補一根前一天的收盤當作昨收（= 第一根開盤價），讓漲跌欄有值
-        prev = d.iloc[[0]].copy()
-        prev.index = prev.index - timedelta(days=1)
-        prev[["High", "Low", "Close"]] = d["Open"].iloc[0]
-        full[sym] = pd.concat([prev, d])
-    return full
+    """舊介面相容：指定 CSV 檔平移到 start_day。"""
+    import shutil
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        for f in files:
+            shutil.copy(f, d)
+        return feeds.load_demo_csvs(tz, start_day, d)
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(description="ORB 多標的盤中監控（ntfy 通知；yfinance 延遲資料）")
+    ap = argparse.ArgumentParser(description="ORB 多標的盤中監控（終端機即時表格 + ntfy 推播）")
+    ap.add_argument("--config", help="設定檔路徑（預設讀專案資料夾的 config.toml）")
+    ap.add_argument("--source", choices=list(orb_config.SOURCES), default="yahoo",
+                    help="資料來源：yahoo / shioaji（永豐）/ fake（假資料）/ demo（重播 data/*.csv）")
     ap.add_argument("--symbols", type=str, help="逗號分隔代號：2330.TW,2317.TW,0050.TW")
     ap.add_argument("--symbols-file", type=str, help="每行一檔的清單檔（# 開頭為註解）")
     ap.add_argument("--open-mins", type=int, default=15, help="開盤區間分鐘數")
@@ -383,77 +368,126 @@ def build_parser():
     ap.add_argument("--timezone", type=str, default="Asia/Taipei")
     ap.add_argument("--market-open", default="09:00", help="開盤時間 HH:MM")
     ap.add_argument("--market-close", default="13:30", help="收盤時間 HH:MM")
-    ap.add_argument("--vol-factor", type=float, default=1.5, help="量能門檻：成交量 >= MA10 × 倍數")
+    ap.add_argument("--vol-factor", type=float, default=1.5, help="量能門檻：成交量 >= 最近 10 根（含當根）平均 × 倍數")
     ap.add_argument("--stop-mode", choices=["range", "mid"], default="range", help="停損放區間另一端或區間中線")
     ap.add_argument("--target-r", type=float, default=2.0, help="目標價 = 進場 ± 風險 × R")
     ap.add_argument("--every-bar", action="store_true", help="每根新 K 棒符合條件都通知（預設每檔每方向每天一次）")
     ap.add_argument("--max-signal-age", type=int, default=5, help="超過幾分鐘的舊訊號不推播（中途啟動時用）")
     ap.add_argument("--notify", default="ntfy", choices=["ntfy", "print"], help="print = 不推播，只顯示在終端機")
-    ap.add_argument("--ntfy-topic", default=os.environ.get("NTFY_TOPIC"), help="ntfy topic（也可用環境變數 NTFY_TOPIC）")
+    ap.add_argument("--ntfy-topic", help="ntfy topic（建議放 .env 的 NTFY_TOPIC）")
     ap.add_argument("--ntfy-server", default="https://ntfy.sh", help="自架 ntfy 伺服器網址")
+    ap.add_argument("--ntfy-token", help="ntfy 存取權杖（建議放 .env 的 NTFY_TOKEN）")
     ap.add_argument("--no-summary", dest="summary", action="store_false", help="收盤不推總結")
     ap.add_argument("--exit-after-close", action="store_true", help="收盤（或判定休市）後結束程式；排程執行時用")
     ap.add_argument("--no-tui", dest="tui", action="store_false", help="不用即時表格，改成一行一行的 log")
-    ap.add_argument("--demo", action="store_true", help="用 data/*.csv 快轉重播一個早盤（不推播）")
-    ap.add_argument("--demo-speed", type=float, default=60.0, help="demo 快轉倍數")
+    ap.add_argument("--shioaji-simulation", action="store_true", help="永豐使用模擬環境")
+    ap.add_argument("--demo", action="store_true", help="等同 --source demo：用 data/*.csv 快轉重播一個早盤（不推播）")
+    ap.add_argument("--sim-speed", "--demo-speed", dest="sim_speed", type=float, default=60.0,
+                    help="fake / demo 的快轉倍數（1 = 跟真實時間同步）")
+    ap.add_argument("--fake-seed", type=int, default=0, help="假資料亂數種子（0 = 每次不同）")
     return ap
 
 
-def main():
-    args = build_parser().parse_args()
-    tz = pytz.timezone(args.timezone)
-    fetch, clock, sleep = fetch_multi_1m, None, time.sleep
-
+def parse_args(argv=None):
+    """命令列 > config.toml > 預設值；密鑰從環境變數 / .env 讀。"""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    known, _ = pre.parse_known_args(argv)
+    orb_config.load_env()
+    ap = build_parser()
+    ap.set_defaults(**orb_config.load_config(known.config))
+    args = ap.parse_args(argv)
     if args.demo:
-        files = sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "*.csv")))
-        if not files:
+        args.source = "demo"
+    args.ntfy_topic = args.ntfy_topic or os.environ.get("NTFY_TOPIC")
+    args.ntfy_token = args.ntfy_token or os.environ.get("NTFY_TOKEN")
+    return args
+
+
+def resolve_symbols(args):
+    symbols = []
+    if args.symbols:
+        symbols += [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+    path = args.symbols_file
+    if not symbols and not path and os.path.exists(os.path.join(orb_config.ROOT, "symbols.txt")):
+        path = os.path.join(orb_config.ROOT, "symbols.txt")
+    if path:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                s = line.split("#", 1)[0].strip()
+                if s:
+                    symbols.append(s)
+    return list(dict.fromkeys(symbols))
+
+
+def build_source(args, tz, symbols):
+    """依 args.source 回傳 (symbols, fetch, clock, sleep)；clock 為 None 表示用真實時間。"""
+    if args.source == "yahoo":
+        return symbols, feeds.fetch_yahoo, None, time.sleep
+    if args.source == "shioaji":
+        key, secret = orb_config.shioaji_keys()
+        feed = feeds.ShioajiFeed(key, secret, tz, simulation=args.shioaji_simulation,
+                                 market_open=core.parse_hhmm(args.market_open))
+        return symbols, feed.fetch, None, time.sleep
+
+    day = datetime.now(tz).date()
+    mopen = core.parse_hhmm(args.market_open)
+    if args.source == "demo":
+        full = feeds.load_demo_csvs(tz, day)
+        if not full:
             raise SystemExit("找不到 data/*.csv")
-        day = datetime.now(tz).date()
-        full = demo_feed(tz, files, day)
         symbols = list(full)
-        args.notify, args.exit_after_close, args.max_signal_age = "print", True, 10**6
-        args.poll_secs = min(args.poll_secs, 30)
+        args.notify, args.max_signal_age = "print", 10**6
         last_bar = max(d.index[-1] for d in full.values())
-        sim = {"t": tz.localize(datetime.combine(day, core.parse_hhmm(args.market_open))) - timedelta(minutes=1)}
         args.market_close = (last_bar + timedelta(minutes=1)).strftime("%H:%M")
-
-        clock = lambda: sim["t"]
-
-        def sleep(secs):
-            time.sleep(secs / args.demo_speed)
-            sim["t"] += timedelta(seconds=secs)
-
-        def fetch(syms):
-            return {s: full[s][full[s].index <= sim["t"]].copy() for s in syms if (full[s].index <= sim["t"]).any()}
+    else:  # fake
+        mclose = core.parse_hhmm(args.market_close)
+        full, scen = {}, {}
+        for i, s in enumerate(symbols):
+            seed = args.fake_seed * 1009 + i if args.fake_seed else None
+            full[s], scen[s] = feeds.fake_day(s, day, tz, seed=seed, market_open=mopen, market_close=mclose,
+                                              open_mins=args.open_mins)
+        args.fake_scenarios = scen
+    if args.sim_speed > 1:
+        args.exit_after_close = True
+        args.poll_secs = min(args.poll_secs, 30)
+        start = tz.localize(datetime.combine(day, mopen)) - timedelta(minutes=1)
     else:
-        symbols = []
-        if args.symbols:
-            symbols += [s.strip() for s in args.symbols.split(",") if s.strip()]
-        if args.symbols_file:
-            with open(args.symbols_file, "r", encoding="utf-8-sig") as f:
-                for line in f:
-                    s = line.split("#", 1)[0].strip()
-                    if s:
-                        symbols.append(s)
-        symbols = list(dict.fromkeys(symbols))
-        if not symbols:
-            raise SystemExit("請用 --symbols 或 --symbols-file 指定標的清單")
-        if args.notify == "ntfy" and not args.ntfy_topic:
-            raise SystemExit("請提供 --ntfy-topic（或環境變數 NTFY_TOPIC），或用 --notify print 只顯示不推播")
+        start = datetime.now(tz)
+    sim = feeds.SimFeed(full, start, args.sim_speed, time.sleep)
+    return symbols, sim.fetch, sim.clock, sim.sleep
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    tz = pytz.timezone(args.timezone)
+    symbols = resolve_symbols(args)
+    if args.source != "demo" and not symbols:
+        raise SystemExit("沒有設定股票：請執行 python orb.py init，或用 --symbols / --symbols-file 指定")
+    if args.notify == "ntfy" and args.source == "fake" and not args.ntfy_topic:
+        print("（沒有設定 NTFY_TOPIC，假資料試跑改成只顯示在終端機）", flush=True)
+        args.notify = "print"
+    if args.notify == "ntfy" and args.source != "demo" and not args.ntfy_topic:
+        raise SystemExit("沒有設定 ntfy 主題：請在 .env 設定 NTFY_TOPIC（或執行 python orb.py init），"
+                         "或用 --notify print 只顯示不推播")
+    symbols, fetch, clock, sleep = build_source(args, tz, symbols)
 
     console = Console() if Console else None
     args.tui = bool(args.tui and console and console.is_terminal)
     board = Board(args, symbols)
     mon = Monitor(args, symbols, tz, board, fetch=fetch, clock=clock, sleep=sleep)
     if not args.tui:
-        print(f"Start ORB | N={len(symbols)} | ORB={args.open_mins}m | tz={args.timezone} | volF={args.vol_factor}", flush=True)
+        print(f"Start ORB | source={args.source} | N={len(symbols)} | ORB={args.open_mins}m | volF={args.vol_factor}",
+              flush=True)
         print("Symbols:", ", ".join(symbols), flush=True)
+    if getattr(args, "fake_scenarios", None):
+        board.log("假資料情境：" + "、".join(f"{s} {feeds.SCENARIOS[v]}" for s, v in args.fake_scenarios.items()),
+                  "dim")
 
     try:
         if args.tui:
             with Live(console=console, get_renderable=board.render, refresh_per_second=4, screen=False):
                 mon.run()
-            # 結束後留下最後畫面
         else:
             mon.run()
     except KeyboardInterrupt:

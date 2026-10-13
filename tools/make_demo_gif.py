@@ -46,7 +46,7 @@ def draw_frame(renderable):
     d.rectangle([0, 0, W, 30], fill=(40, 46, 54))
     for i, c in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
         d.ellipse([14 + i * 22, 9, 26 + i * 22, 21], fill=c)
-    d.text((W // 2, 15), "python orb_multi_yf_ntfy.py --demo", font=CJK, fill=(160, 168, 178), anchor="mm")
+    d.text((W // 2, 15), "python orb.py demo", font=CJK, fill=(160, 168, 178), anchor="mm")
     y = 30 + PAD
     for line in lines:
         x = PAD

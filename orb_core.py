@@ -154,19 +154,22 @@ def format_signal(sig: Signal):
     return title, msg, ["red_circle" if long else "green_circle", "chart_with_upwards_trend" if long else "chart_with_downwards_trend"]
 
 
-def ntfy_publish(topic, title, message, tags=None, priority=3, click=None, server="https://ntfy.sh"):
-    """用 JSON 發佈，標題可以放中文（HTTP header 不能直接放非 ASCII）。"""
+def ntfy_publish(topic, title, message, tags=None, priority=3, click=None, server="https://ntfy.sh", token=None):
+    """
+    用 JSON 發佈（標題可以放中文）。成功回傳 None，失敗回傳錯誤訊息。
+    token：有設定存取控制的 topic 用的權杖（ntfy 的 access token，tk_ 開頭）。
+    """
     payload = {"topic": topic, "title": title, "message": message, "priority": priority}
     if tags:
         payload["tags"] = tags
     if click:
         payload["click"] = click
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        r = requests.post(server.rstrip("/") + "/", json=payload, timeout=10)
-        if r.status_code >= 300:
-            print(f"[WARN] ntfy 回應碼：{r.status_code} {r.text[:200]}")
-            return False
-        return True
+        r = requests.post(server.rstrip("/") + "/", json=payload, headers=headers, timeout=10)
     except Exception as e:
-        print(f"[WARN] ntfy 失敗：{e}")
-        return False
+        return f"連線失敗：{e}"
+    if r.status_code >= 300:
+        hint = "（權杖錯誤或沒有這個 topic 的寫入權限）" if r.status_code in (401, 403) else ""
+        return f"HTTP {r.status_code}{hint} {r.text[:200]}"
+    return None

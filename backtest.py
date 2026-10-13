@@ -11,6 +11,9 @@ ORB 回測：用和盤中監控完全相同的訊號邏輯，看最近一段時�
   # 用自己的 CSV
   python backtest.py --csv data/2330.TW.csv
 
+  # 用假資料測試回測流程（結果不代表任何真實績效）
+  python backtest.py --source fake --symbols 2330.TW,2317.TW --days 20
+
 出場規則：先碰到停損或目標就出場（同一根 K 棒兩者都碰到算停損），都沒碰到就收盤平倉。
 不含手續費、證交稅與滑價。
 """
@@ -22,6 +25,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytz
 
+import feeds
 import orb_core as core
 
 
@@ -101,6 +105,8 @@ def main():
     ap = argparse.ArgumentParser(description="ORB 回測（與盤中監控相同邏輯）")
     ap.add_argument("--symbols", help="逗號分隔代號")
     ap.add_argument("--symbols-file", help="每行一檔的清單檔（# 開頭為註解）")
+    ap.add_argument("--source", choices=["yahoo", "fake"], default="yahoo", help="yahoo 或 fake（假資料）")
+    ap.add_argument("--seed", type=int, default=1, help="假資料亂數種子")
     ap.add_argument("--csv", nargs="+", help="改用 CSV（檔名當代號）")
     ap.add_argument("--days", type=int, default=30, help="Yahoo 回測天數（上限約 30）")
     ap.add_argument("--timezone", default="Asia/Taipei")
@@ -126,8 +132,12 @@ def main():
         symbols = list(dict.fromkeys(symbols))
         if not symbols:
             raise SystemExit("請用 --symbols / --symbols-file / --csv 指定資料")
-        print(f"下載 {len(symbols)} 檔最近 {args.days} 天 1 分 K…")
-        data = load_yahoo(symbols, args.days, tz)
+        if args.source == "fake":
+            print(f"⚠ 使用假資料：{len(symbols)} 檔 × {args.days} 天，結果只用來測試流程，不代表任何真實績效")
+            data = feeds.fake_days(symbols, args.days, tz, seed=args.seed, open_mins=args.open_mins)
+        else:
+            print(f"下載 {len(symbols)} 檔最近 {args.days} 天 1 分 K…")
+            data = load_yahoo(symbols, args.days, tz)
     if not data:
         raise SystemExit("沒有資料")
     days = sorted({d for df in data.values() for d in df.index.date})

@@ -7,10 +7,12 @@ replay_min.py
 """
 
 import argparse
+import os
 import time
 
 import pandas as pd
 
+import orb_config
 import orb_core as core
 
 
@@ -25,10 +27,12 @@ def main():
     ap.add_argument("--target-r", type=float, default=2.0)
     ap.add_argument("--speed", type=float, default=0.5, help="每分鐘K播放間隔秒數")
     ap.add_argument("--notify", default="ntfy", choices=["ntfy", "print"], help="print = 只印在終端機，不推播")
-    ap.add_argument("--ntfy-topic", help="ntfy 主題，例如 Chailease")
+    ap.add_argument("--ntfy-topic", help="ntfy 主題（預設讀 .env 的 NTFY_TOPIC）")
     ap.add_argument("--ntfy-server", default="https://ntfy.sh")
     ap.add_argument("--every-bar", action="store_true", help="每根新 K 棒符合條件都通知（預設每方向只通知一次）")
     args = ap.parse_args()
+    orb_config.load_env()
+    args.ntfy_topic = args.ntfy_topic or os.environ.get("NTFY_TOPIC")
     if args.notify == "ntfy" and not args.ntfy_topic:
         raise SystemExit("請提供 --ntfy-topic，或用 --notify print 只印在終端機")
 
@@ -58,8 +62,10 @@ def main():
             title, msg, tags = core.format_signal(sig)
             print(f"🔔 {title}\n   " + msg.replace("\n", "\n   "))
             if args.notify == "ntfy":
-                core.ntfy_publish(args.ntfy_topic, title, msg, tags=tags, priority=4,
-                                  click=core.chart_url(args.symbol), server=args.ntfy_server)
+                err = core.ntfy_publish(args.ntfy_topic, title, msg, tags=tags, priority=4,
+                                        click=core.chart_url(args.symbol), server=args.ntfy_server,
+                                        token=os.environ.get("NTFY_TOKEN"))
+                print(f"   ⚠ 推播失敗：{err}" if err else "   ✓ 已推播")
         time.sleep(max(0.0, args.speed))
 
 
