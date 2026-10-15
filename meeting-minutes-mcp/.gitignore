@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+# 本機資料：上傳的音檔、逐字稿快取、產出的會議記錄
+uploads/
+cache/
+minutes/
